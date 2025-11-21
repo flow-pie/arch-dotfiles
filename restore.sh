@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
 # restore.sh - Interactive restore for archives created by backup.sh
+# Supports archives stored locally or in a GitHub repo
 # Usage: sudo ./restore.sh /path/to/archive.tar.gz
+#    or: sudo ./restore.sh github:owner/repo backups/
 
 set -euo pipefail
 IFS=$'\n\t'
 
 if [ "$#" -lt 1 ]; then
-  echo "Usage: $0 /path/to/archive.tar.gz"; exit 2
+  echo "Usage: $0 /path/to/archive.tar.gz"
+  echo "   or: $0 github:owner/repo [path-in-repo]"
+  exit 2
 fi
+
 ARCHIVE="$1"
+REPO_PATH="${2:-}"
 WORKDIR=$(mktemp -d)
 
 log(){ echo "[restore] $*"; }
@@ -20,6 +26,33 @@ confirm(){
     *) return 1 ;;
   esac
 }
+
+# Handle GitHub URLs
+if [[ "$ARCHIVE" =~ ^github: ]]; then
+  GITHUB_REPO="${ARCHIVE#github:}"
+  if [ -z "$REPO_PATH" ]; then
+    REPO_PATH="backups"
+  fi
+  
+  log "Fetching backups from GitHub: $GITHUB_REPO"
+  if command -v gh >/dev/null 2>&1; then
+    log "Available backups in $GITHUB_REPO/$REPO_PATH:"
+    gh repo view "$GITHUB_REPO" --json files --jq ".files[] | select(.path | startswith(\"$REPO_PATH/\")) | .path" || true
+    read -r -p "Enter backup filename to download (from list above): " BACKUP_FILE
+    
+    if [ -z "$BACKUP_FILE" ]; then
+      err "No backup selected"; exit 1
+    fi
+    
+    log "Downloading $BACKUP_FILE from GitHub..."
+    gh repo download "$GITHUB_REPO" "$REPO_PATH/$BACKUP_FILE" -- -O "$WORKDIR/$BACKUP_FILE" || {
+      err "Failed to download backup"; exit 1
+    }
+    ARCHIVE="$WORKDIR/$BACKUP_FILE"
+  else
+    err "GitHub CLI (gh) not installed. Install it to download from GitHub."; exit 1
+  fi
+fi
 
 if [ ! -f "$ARCHIVE" ]; then err "Archive not found: $ARCHIVE"; exit 1; fi
 

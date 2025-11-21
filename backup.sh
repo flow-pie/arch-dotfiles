@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# backup.sh - Interactive Arch backup script
+# backup.sh - Interactive Arch backup script with GitHub auto-push
 # Outputs: backups/YYYYMMDD-HHMMSS-<hostname>-<what>.tar.gz
+# Automatically commits and pushes to GitHub (private repo)
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -8,10 +9,12 @@ IFS=$'\n\t'
 VERSION="1.0"
 DEST_DIR="${HOME}/backups"
 TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-HOSTNAME=$(hostname -s)
+HOSTNAME=$(hostname -s 2>/dev/null || echo "system")
 ARCHIVE_NAME="${TIMESTAMP}-${HOSTNAME}.tar.gz"
 TMPDIR=$(mktemp -d)
 GPG_RECIPIENT=""
+GIT_REPO=""
+PUSH_TO_GITHUB=false
 
 # Helpers
 log(){ echo "[backup] $*"; }
@@ -44,6 +47,7 @@ while [[ ${#} -gt 0 ]]; do
     --no-packages) DO_PACKAGES=false; shift ;;
     --gpg) DO_GPG=true; GPG_RECIPIENT="$2"; shift 2 ;;
     --dest) DEST_DIR="$2"; shift 2 ;;
+    --push) PUSH_TO_GITHUB=true; GIT_REPO="$2"; shift 2 ;;
     --help) sed -n '1,120p' "$0"; exit 0 ;;
     *) shift ;;
   esac
@@ -60,6 +64,7 @@ if confirm "Create interactive backup?"; then
   if confirm "Include list of enabled systemd services?"; then DO_SERVICES=true; else DO_SERVICES=false; fi
   if confirm "Include additional paths (e.g. /opt, /var/lib/someapp) ?"; then DO_EXTRA=true; else DO_EXTRA=false; fi
   if confirm "Encrypt archive with GPG (you'll need gpg setup)?"; then DO_GPG=true; read -r -p "GPG recipient (email or key id): " GPG_RECIPIENT; fi
+  if confirm "Push backup to GitHub (requires git repo with backups/ folder)?"; then PUSH_TO_GITHUB=true; read -r -p "GitHub repo path (e.g., ~/repos/my-backups): " GIT_REPO; fi
 else
   log "Non-interactive mode using defaults"
 fi
@@ -163,7 +168,38 @@ if [ "$DO_GPG" = true ]; then
   log "Encrypted archive: $DEST_DIR/$ARCHIVE_NAME.gpg"
 fi
 
+# Push to GitHub if requested
+if [ "$PUSH_TO_GITHUB" = true ]; then
+  if [ -z "$GIT_REPO" ]; then
+    err "Git repo path not specified; skipping GitHub push."
+  elif [ ! -d "$GIT_REPO/.git" ]; then
+    err "Not a git repository: $GIT_REPO; skipping GitHub push."
+  else
+    log "Pushing backup to GitHub..."
+    (
+      cd "$GIT_REPO"
+      mkdir -p backups
+      
+      if [ "$DO_GPG" = true ] && [ -f "$DEST_DIR/$ARCHIVE_NAME.gpg" ]; then
+        cp "$DEST_DIR/$ARCHIVE_NAME.gpg" backups/
+        BACKUP_FILE="$ARCHIVE_NAME.gpg"
+      else
+        cp "$DEST_DIR/$ARCHIVE_NAME" backups/
+        BACKUP_FILE="$ARCHIVE_NAME"
+      fi
+      
+      git add "backups/$BACKUP_FILE"
+      git commit -m "Add backup: $BACKUP_FILE" || log "No changes to commit"
+      git push origin HEAD || err "Failed to push to GitHub. Check your connection and permissions."
+      log "✓ Backup pushed to GitHub: backups/$BACKUP_FILE"
+    )
+  fi
+fi
+
 echo
 log "Next steps:"
-log "- Move the archive to external storage or upload to private storage."
-log "- Commit the package lists (metadata) to a private GitHub repo for quick restore."
+log "- Backups are stored in: $DEST_DIR"
+if [ "$PUSH_TO_GITHUB" = true ]; then
+  log "- Archives are also pushed to GitHub for easy restore on any machine."
+fi
+log "- To restore: sudo ./restore.sh /path/to/archive.tar.gz"
