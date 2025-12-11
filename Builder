@@ -1,0 +1,164 @@
+#!/bin/bash
+set -e
+
+# Arch Dotfiles Builder
+# Advanced installation with dependency management
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOG_FILE="${SCRIPT_DIR}/install.log"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log() {
+    echo -e "${GREEN}[*]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+error() {
+    echo -e "${RED}[!]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+warn() {
+    echo -e "${YELLOW}[!]${NC} $1" | tee -a "$LOG_FILE"
+}
+
+check_cmd() {
+    if command -v "$1" &> /dev/null; then
+        log "$1 found"
+        return 0
+    else
+        warn "$1 not found"
+        return 1
+    fi
+}
+
+install_dependencies() {
+    log "Checking dependencies..."
+    
+    local missing=()
+    
+    for cmd in hyprland hyprlock kitty waybar; do
+        if ! check_cmd "$cmd"; then
+            missing+=("$cmd")
+        fi
+    done
+    
+    if [ ${#missing[@]} -gt 0 ]; then
+        error "Missing packages: ${missing[*]}"
+        
+        # Suggest package manager based on system
+        if command -v pacman &>/dev/null; then
+            error "Install with: sudo pacman -S ${missing[*]}"
+        elif command -v apt &>/dev/null; then
+            error "Install with: sudo apt install ${missing[*]}"
+        elif command -v dnf &>/dev/null; then
+            error "Install with: sudo dnf install ${missing[*]}"
+        elif command -v zypper &>/dev/null; then
+            error "Install with: sudo zypper install ${missing[*]}"
+        elif command -v apk &>/dev/null; then
+            error "Install with: sudo apk add ${missing[*]}"
+        else
+            error "Please install missing packages using your distro's package manager"
+        fi
+        return 1
+    fi
+    
+    log "All dependencies found"
+    return 0
+}
+
+backup_config() {
+    local config_dir="$HOME/.config"
+    local backup_dir="$config_dir/backup-$(date +%Y%m%d-%H%M%S)"
+    
+    log "Backing up existing configs to $backup_dir..."
+    mkdir -p "$backup_dir"
+    
+    for dir in hypr kitty vim waybar; do
+        if [ -d "$config_dir/$dir" ]; then
+            cp -r "$config_dir/$dir" "$backup_dir/"
+            log "Backed up $dir"
+        fi
+    done
+}
+
+install_configs() {
+    log "Installing configurations..."
+    
+    local src_dir="$SCRIPT_DIR/home"
+    local home_dir="$HOME"
+    
+    mkdir -p "$home_dir/.config"
+    
+    # Copy .config contents
+    if [ -d "$src_dir/.config" ]; then
+        cp -rv "$src_dir/.config"/* "$home_dir/.config/" | tee -a "$LOG_FILE"
+    fi
+    
+    # Copy root dotfiles
+    for file in "$src_dir"/.*; do
+        filename=$(basename "$file")
+        
+        # Skip .git, .config, and . ..
+        if [[ "$filename" == ".git"* ]] || [[ "$filename" == ".config" ]] || [[ "$filename" == "." ]] || [[ "$filename" == ".." ]]; then
+            continue
+        fi
+        
+        log "Installing $filename..."
+        cp -v "$file" "$home_dir/$filename" | tee -a "$LOG_FILE"
+    done
+    
+    log "Installation complete!"
+}
+
+setup_shell() {
+    log "Configuring shell..."
+    
+    if ! check_cmd zsh; then
+        warn "zsh not installed, skipping shell setup"
+        return
+    fi
+    
+    if grep -q "/bin/zsh" /etc/shells 2>/dev/null; then
+        log "zsh already in /etc/shells"
+    else
+        warn "zsh not in /etc/shells, run: chsh -s /bin/zsh"
+    fi
+}
+
+main() {
+    echo "========================================="
+    echo "Arch Dotfiles Builder"
+    echo "========================================="
+    
+    # Check if running as root (not recommended)
+    if [ "$EUID" -eq 0 ]; then
+        warn "Running as root - some configs may have permission issues"
+    fi
+    
+    # Install dependencies
+    if ! install_dependencies; then
+        error "Dependency check failed"
+        exit 1
+    fi
+    
+    # Backup existing configs
+    backup_config
+    
+    # Install configs
+    install_configs
+    
+    # Setup shell
+    setup_shell
+    
+    log "========================================="
+    log "Installation successful!"
+    log "Reload Hyprland with: Super + Shift + R"
+    log "Full logs available in: $LOG_FILE"
+    log "========================================="
+}
+
+main "$@"
